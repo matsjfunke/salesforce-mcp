@@ -45,6 +45,26 @@ The server requires:
 - Bearer token in the `Authorization` header (format: `Bearer YOUR_TOKEN`)
 - Salesforce instance URL via `SALESFORCE_INSTANCE_URL` environment variable (see Environment Setup above)
 
+# Salesforce setup
+
+1. Enable API Access, go to:  Setup → Profiles → [Your Profile] → System Permissions 
+
+      a. Make sure API Enabled is checked. Without this, no external app can reach Salesforce.
+
+2. Add a Connected App. You need to go to Setup → Apps → App Manager (https://your-instance.develop.lightning.force.com/lightning/setup/NavigationMenus/home). 
+
+    a. Create a new Connected App
+
+    b. Name your app
+
+    c. Enable OAuth Settings
+
+    d. Set the callbackk url from /mcp on langdock
+
+    e. Add scopes like: full, refresh_token, api
+
+    f. Save your Consumer Key and Consumer Secret
+
 ## Available Tools
 
 ### get-current-user
