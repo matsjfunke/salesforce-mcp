@@ -13,21 +13,13 @@ This MCP server demonstrates the OAuth Bearer token forwarding pattern:
 
 The server stores the Bearer token per session, allowing it to maintain authenticated connections to Salesforce throughout the MCP session lifecycle.
 
-## Installation
+## Installation / Setup
 
 ```bash
 pnpm i
 ```
 
-## Development
-
-```bash
-pnpm dev
-```
-
-The server runs on port 3333 by default.
-
-## Environment Setup
+### Environment Setup
 
 Create a `.env` file in the root directory with your Salesforce configuration:
 
@@ -38,43 +30,51 @@ SALESFORCE_INSTANCE_URL=https://your-instance.my.salesforce.com
 
 The server uses the Salesforce instance URL from the `SALESFORCE_INSTANCE_URL` environment variable.
 
-## Configuration
+### Configuration
 
 The server requires:
 
 - Bearer token in the `Authorization` header (format: `Bearer YOUR_TOKEN`)
 - Salesforce instance URL via `SALESFORCE_INSTANCE_URL` environment variable (see Environment Setup above)
 
-# Salesforce setup
+### Salesforce setup
 
-1. Enable API Access, go to:  Setup → Profiles → [Your Profile] → System Permissions 
+1. Enable API Access, go to:  Setup → Profiles → [Your Profile] → System Permissions
 
-      a. Make sure API Enabled is checked. Without this, no external app can reach Salesforce.
+   a. Make sure API Enabled is checked. Without this, no external app can reach Salesforce.
 
-2. Add a Connected App. You need to go to Setup → Apps → App Manager (https://your-instance.develop.lightning.force.com/lightning/setup/NavigationMenus/home). 
+2. Add a Connected App. You need to go to Setup → Apps → App Manager (https://your-instance.develop.lightning.force.com/lightning/setup/NavigationMenus/home).
 
-    a. Create a new Connected App
+   a. Create a new Connected App
 
-    b. Name your app
+   b. Name your app
 
-    c. Enable OAuth Settings
+   c. Enable OAuth Settings
 
-    d. Set the callbackk url from /mcp on langdock
+   d. Set the callbackk url from /mcp on langdock
 
-    e. Add scopes like: full, refresh_token, api
+   e. Add scopes like: full, refresh_token, api
 
-    f. Save your Consumer Key and Consumer Secret
+   f. Save your Consumer Key and Consumer Secret
 
-## Available Tools
+## Connecting with Langdock
 
-### get-current-user
+### Start the server
 
-Retrieves information about the authenticated Salesforce user. This demonstrates the Bearer token forwarding by using the token to call Salesforce's identity API.
+```bash
+pnpm dev # runs on port 3333
+```
 
-Returns:
+### Tunnel using ngrok
 
-- User ID
-- Username
-- Email
-- Display Name
-- Organization ID
+```bash
+ngrok http 3333
+```
+
+### Configure MCP client in Langdock
+
+![MCP Client configuration](asstets/mcp-client.png)
+
+Then create and test the connection
+
+![MCP Client configuration](asstets/mcp-client.png)
