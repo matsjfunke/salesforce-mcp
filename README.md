@@ -78,3 +78,5 @@ ngrok http 3333
 Then create and test the connection
 
 ![MCP Client configuration](assets/mcp-connection.png)
+
+![Tool Call](assets/tool-call.png)

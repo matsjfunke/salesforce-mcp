@@ -79,11 +79,13 @@ server.setRequestHandler(
 
         // Use the instance URL from environment variable
         const instanceUrl = process.env.SALESFORCE_INSTANCE_URL;
+        const accessToken = activeAuth.token.replace("Bearer ", "");
+        console.info("accessToken:", accessToken);
 
         // Create Salesforce connection using the Bearer token
         const conn = new jsforce.Connection({
           instanceUrl: instanceUrl,
-          accessToken: activeAuth.token.replace("Bearer ", ""),
+          accessToken: accessToken,
         });
 
         // Query current user information
