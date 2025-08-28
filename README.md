@@ -73,8 +73,8 @@ ngrok http 3333
 
 ### Configure MCP client in Langdock
 
-![MCP Client configuration](asstets/mcp-client.png)
+![MCP Client configuration](assets/mcp-client.png)
 
 Then create and test the connection
 
-![MCP Client configuration](asstets/mcp-client.png)
+![MCP Client configuration](assets/mcp-connection.png)
