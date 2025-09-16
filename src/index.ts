@@ -12,8 +12,43 @@ dotenv.config();
 // Store transports by session ID
 const streamableTransports: Record<string, StreamableHTTPServerTransport> = {};
 
-// Store auth data by session ID
-const authData: Record<string, { token: string }> = {};
+// Store current request's auth token
+let currentRequestToken: string | undefined;
+
+// Validate token
+async function validateToken(token: string): Promise<boolean> {
+  try {
+    const conn = new jsforce.Connection({
+      instanceUrl: process.env.SALESFORCE_INSTANCE_URL,
+      accessToken: token.replace("Bearer ", ""),
+    });
+    await conn.identity();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Validate request with proper error handling
+async function validateRequest(): Promise<void> {
+  if (!currentRequestToken) {
+    const error = new Error(
+      "Unauthorized: No authorization token provided."
+    ) as Error & { code: number };
+    error.code = 401;
+    throw error;
+  }
+
+  const isValid = await validateToken(currentRequestToken);
+  if (!isValid) {
+    console.log("Invalid token - throwing error");
+    const error = new Error(
+      "Unauthorized: Invalid or expired token."
+    ) as Error & { code: number };
+    error.code = 401;
+    throw error;
+  }
+}
 
 // Create MCP server instance
 const server = new Server(
@@ -31,18 +66,19 @@ const server = new Server(
 // Tool handlers
 server.setRequestHandler(
   z.object({ method: z.literal("tools/list") }),
-  async () => ({
-    tools: [
-      {
-        name: "get-current-user",
-        description: "Get information about the current Salesforce user",
-        inputSchema: {
-          type: "object",
-          properties: {},
+  async () => {
+    await validateRequest();
+
+    return {
+      tools: [
+        {
+          name: "get-current-user",
+          description: "Get information about the current Salesforce user",
+          inputSchema: { type: "object", properties: {} },
         },
-      },
-    ],
-  })
+      ],
+    };
+  }
 );
 
 server.setRequestHandler(
@@ -56,39 +92,12 @@ server.setRequestHandler(
   async (request) => {
     if (request.params.name === "get-current-user") {
       try {
-        // Try to find an active session with auth data
-        let activeAuth: { token: string } | undefined;
+        await validateRequest();
 
-        for (const [sessionId, auth] of Object.entries(authData)) {
-          if (auth && auth.token) {
-            activeAuth = auth;
-            break;
-          }
-        }
-
-        if (!activeAuth || !activeAuth.token) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: "Error: No authorization token found. Make sure Bearer token is provided in Authorization header.",
-              },
-            ],
-          };
-        }
-
-        // Use the instance URL from environment variable
-        const instanceUrl = process.env.SALESFORCE_INSTANCE_URL;
-        const accessToken = activeAuth.token.replace("Bearer ", "");
-        console.info("accessToken:", accessToken);
-
-        // Create Salesforce connection using the Bearer token
         const conn = new jsforce.Connection({
-          instanceUrl: instanceUrl,
-          accessToken: accessToken,
+          instanceUrl: process.env.SALESFORCE_INSTANCE_URL,
+          accessToken: currentRequestToken!.replace("Bearer ", ""),
         });
-
-        // Query current user information
         const userInfo = await conn.identity();
 
         return {
@@ -117,7 +126,7 @@ server.setRequestHandler(
           content: [
             {
               type: "text",
-              text: `Error: Failed to get Salesforce user: ${
+              text: `Error: ${
                 error instanceof Error ? error.message : String(error)
               }`,
             },
@@ -153,74 +162,34 @@ async function runHttpServer(port: number = 3333) {
 
   // Handle POST requests for client-to-server communication (StreamableHTTP)
   app.post("/mcp", async (req: Request, res: Response) => {
-    // Check for existing session ID
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
-    console.info("mcp-session-id:", sessionId);
-
-    // Extract Authorization header to store for later use
     const authHeader = req.headers["authorization"] as string | undefined;
 
-    if (authHeader) {
-      console.info(
-        "Received Authorization header:",
-        authHeader.substring(0, 20) + "..."
-      );
-    }
+    // Set the current request token for this request
+    currentRequestToken = authHeader;
 
     let transport: StreamableHTTPServerTransport;
 
     if (sessionId && streamableTransports[sessionId]) {
-      // Reuse existing transport
       transport = streamableTransports[sessionId];
-      console.info("Reusing existing transport for session:", sessionId);
-
-      // Update auth data if provided
-      if (authHeader) {
-        authData[sessionId] = {
-          token: authHeader,
-        };
-        console.info("Updated auth data for session:", sessionId);
-      }
     } else {
-      //if (!sessionId && isInitializeRequest(req.body))
-      // New initialization request
-      console.info("Creating new StreamableHTTP transport for initialization");
       transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
-        onsessioninitialized: (newSessionId: string) => {
-          // Store the transport by session ID
+        onsessioninitialized: async (newSessionId: string) => {
           streamableTransports[newSessionId] = transport;
-          console.info("Stored new transport for session:", newSessionId);
-
-          // Store auth data if provided
-          if (authHeader) {
-            authData[newSessionId] = {
-              token: authHeader,
-            };
-            console.info("Stored auth data for new session:", newSessionId);
-          }
         },
         // DNS rebinding protection is disabled by default for backwards compatibility
         enableDnsRebindingProtection: true,
       });
 
-      // Clean up transport when closed
       transport.onclose = () => {
         if (transport.sessionId) {
           delete streamableTransports[transport.sessionId];
-          delete authData[transport.sessionId];
-          console.info(
-            "Cleaned up transport and auth data for session:",
-            transport.sessionId
-          );
         }
       };
 
-      // Connect the existing server to this transport
       await server.connect(transport);
     }
-
-    // Handle the request
     await transport.handleRequest(req, res, req.body);
   });
 
