@@ -9,29 +9,53 @@ import dotenv from "dotenv";
 // Load environment variables
 dotenv.config();
 
-// Store transports by session ID
+// Store transports and tokens by session ID
 const streamableTransports: Record<string, StreamableHTTPServerTransport> = {};
-
-// Store current request's auth token
+const sessionTokens: Record<string, string> = {};
+// Store current request token for the active request
 let currentRequestToken: string | undefined;
 
 // Validate token
 async function validateToken(token: string): Promise<boolean> {
   try {
+    const cleanToken = token.replace("Bearer ", "");
+    console.log("🔍 Clean token for Salesforce:", cleanToken);
+
     const conn = new jsforce.Connection({
       instanceUrl: process.env.SALESFORCE_INSTANCE_URL,
-      accessToken: token.replace("Bearer ", ""),
+      accessToken: cleanToken,
     });
-    await conn.identity();
+
+    console.log("🔍 Calling Salesforce identity API...");
+    const identity = await conn.identity();
+    console.log("✅ Token validation successful, identity:", {
+      user_id: identity.user_id,
+      username: identity.username,
+      organization_id: identity.organization_id,
+    });
     return true;
-  } catch {
+  } catch (error) {
+    console.log("❌ Token validation failed:", {
+      message: error instanceof Error ? error.message : String(error),
+      status:
+        error instanceof Error && "status" in error
+          ? (error as any).status
+          : "unknown",
+      statusCode:
+        error instanceof Error && "statusCode" in error
+          ? (error as any).statusCode
+          : "unknown",
+    });
     return false;
   }
 }
 
-// Validate request with proper error handling
-async function validateRequest(): Promise<void> {
-  if (!currentRequestToken) {
+// Validate request with proper error handling - called on EVERY request
+async function validateRequest(authHeader: string): Promise<void> {
+  console.log("🔍 Starting token validation process...");
+
+  if (!authHeader) {
+    console.log("❌ No authorization header provided");
     const error = new Error(
       "Unauthorized: No authorization token provided."
     ) as Error & { code: number };
@@ -39,9 +63,10 @@ async function validateRequest(): Promise<void> {
     throw error;
   }
 
-  const isValid = await validateToken(currentRequestToken);
+  console.log("🔍 Authorization header found, validating with Salesforce...");
+  const isValid = await validateToken(authHeader);
   if (!isValid) {
-    console.log("Invalid token - throwing error");
+    console.log("❌ Token validation failed - throwing error");
     const error = new Error(
       "Unauthorized: Invalid or expired token."
     ) as Error & { code: number };
@@ -67,8 +92,6 @@ const server = new Server(
 server.setRequestHandler(
   z.object({ method: z.literal("tools/list") }),
   async () => {
-    await validateRequest();
-
     return {
       tools: [
         {
@@ -89,14 +112,17 @@ server.setRequestHandler(
       arguments: z.any().optional(),
     }),
   }),
-  async (request) => {
+  async (request, extra) => {
     if (request.params.name === "get-current-user") {
       try {
-        await validateRequest();
+        // Use the current request token that was set during the HTTP request
+        if (!currentRequestToken) {
+          throw new Error("No valid token found for current request");
+        }
 
         const conn = new jsforce.Connection({
           instanceUrl: process.env.SALESFORCE_INSTANCE_URL,
-          accessToken: currentRequestToken!.replace("Bearer ", ""),
+          accessToken: currentRequestToken.replace("Bearer ", ""),
         });
         const userInfo = await conn.identity();
 
@@ -162,35 +188,67 @@ async function runHttpServer(port: number = 3333) {
 
   // Handle POST requests for client-to-server communication (StreamableHTTP)
   app.post("/mcp", async (req: Request, res: Response) => {
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
-    const authHeader = req.headers["authorization"] as string | undefined;
+    try {
+      const sessionId = req.headers["mcp-session-id"] as string | undefined;
+      const authHeader = req.headers["authorization"] as string | undefined;
 
-    // Set the current request token for this request
-    currentRequestToken = authHeader;
+      if (!sessionId) {
+        console.log("🔗 MCP connection attempt with authHeader:", authHeader);
+      }
 
-    let transport: StreamableHTTPServerTransport;
+      // ALWAYS validate the auth token on every request, regardless of existing session
+      await validateRequest(authHeader!);
 
-    if (sessionId && streamableTransports[sessionId]) {
-      transport = streamableTransports[sessionId];
-    } else {
-      transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => randomUUID(),
-        onsessioninitialized: async (newSessionId: string) => {
-          streamableTransports[newSessionId] = transport;
-        },
-        // DNS rebinding protection is disabled by default for backwards compatibility
-        enableDnsRebindingProtection: true,
-      });
+      // Set the current request token for use in tool handlers
+      currentRequestToken = authHeader!;
 
-      transport.onclose = () => {
-        if (transport.sessionId) {
-          delete streamableTransports[transport.sessionId];
-        }
-      };
+      let transport: StreamableHTTPServerTransport;
 
-      await server.connect(transport);
+      if (sessionId && streamableTransports[sessionId]) {
+        transport = streamableTransports[sessionId];
+        console.log(
+          `🔄 Reusing existing session ${sessionId} with fresh token validation \n`
+        );
+        // Update token for existing session (even though we validated it)
+        sessionTokens[sessionId] = authHeader!;
+      } else {
+        transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: async (newSessionId: string) => {
+            streamableTransports[newSessionId] = transport;
+            // Store the token for this session
+            sessionTokens[newSessionId] = authHeader!;
+            console.log(`✅ Session ${newSessionId} initialized with token`);
+          },
+          // DNS rebinding protection is disabled by default for backwards compatibility
+          enableDnsRebindingProtection: true,
+        });
+
+        transport.onclose = () => {
+          if (transport.sessionId) {
+            delete streamableTransports[transport.sessionId];
+            delete sessionTokens[transport.sessionId];
+            console.log(`🧹 Cleaned up session ${transport.sessionId}`);
+          }
+        };
+
+        await server.connect(transport);
+      }
+      await transport.handleRequest(req, res, req.body);
+    } catch (error) {
+      console.error("❌ MCP request error:", error);
+      if (error instanceof Error && "code" in error && error.code === 401) {
+        res.status(401).json({
+          error: "Unauthorized",
+          message: error.message,
+        });
+      } else {
+        res.status(500).json({
+          error: "Internal Server Error",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
-    await transport.handleRequest(req, res, req.body);
   });
 
   app.listen(port, () => {
